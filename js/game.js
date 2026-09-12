@@ -1,22 +1,668 @@
-import { GAME_CONFIG, STATUS, formatDuration, locationById } from './game-data.js';
-import { currentTeam, clearSession } from './auth.js';
-import { getTeamState, saveTeamState, connectionLabel } from './storage.js';
+import {
+    GAME_CONFIG,
+    STATUS,
+    formatDuration,
+    locationById
+} from './game-data.js';
+
+import {
+    currentTeam,
+    clearSession
+} from './auth.js';
+
+import {
+    getTeamState,
+    saveTeamState,
+    connectionLabel
+} from './storage.js';
+
+
+// --------------------------------------------------
+// TEAM / SESSION
+// --------------------------------------------------
 
 const team = currentTeam();
-if (!team) window.location.replace('login.html');
-const els = { name: document.querySelector('#teamName'), status: document.querySelector('#connectionStatus'), timer: document.querySelector('#timer'), progress: document.querySelector('#progress'), card: document.querySelector('#challengeCard'), toast: document.querySelector('#toast') };
+
+if (!team) {
+    window.location.replace('login.html');
+}
+
+
+// --------------------------------------------------
+// DOM ELEMENTS
+// --------------------------------------------------
+
+const els = {
+    name: document.querySelector('#teamName'),
+    status: document.querySelector('#connectionStatus'),
+    timer: document.querySelector('#timer'),
+    progress: document.querySelector('#progress'),
+    card: document.querySelector('#challengeCard'),
+    toast: document.querySelector('#toast')
+};
+
+
+// --------------------------------------------------
+// STATE
+// --------------------------------------------------
+
 let state;
 let timerId;
-const notify = (message, kind = '') => { els.toast.textContent = message; els.toast.className = `toast ${kind}`; setTimeout(() => els.toast.className = 'toast', 3200); };
-const renderTimer = () => { const end = state.completionTime || Date.now(); els.timer.textContent = formatDuration(state.startTime ? end - state.startTime : 0); };
-const setHeader = () => { els.name.textContent = `${team.emoji} ${team.name}`; els.status.textContent = connectionLabel(); els.progress.textContent = `Checkpoint ${Math.min(state.currentStage, 5)} / 5`; document.querySelector('#progressFill').style.width = `${state.currentStage / 5 * 100}%`; };
-async function persist() { state = await saveTeamState(team.id, state); setHeader(); }
-function startCard() { els.card.innerHTML = `<div class="kicker">START AT CORE</div><h1>Your hunt begins here.</h1><p class="lede">Five checkpoints. One route known only one step at a time. Keep your team together and follow the clue exactly.</p><button class="primary" id="startHunt">Start treasure hunt <span>→</span></button>`; document.querySelector('#startHunt').onclick = async () => { state.status = STATUS.IN_PROGRESS; state.startTime = Date.now(); state.currentStage = 0; state.currentLocation = null; await persist(); render(); }; }
-function challengeCard() { const riddle = GAME_CONFIG.riddles[team.id][state.currentStage]; els.card.innerHTML = `<div class="kicker">CURRENT CHALLENGE · ${state.currentStage + 1} OF 5</div><h1>Solve the number.</h1><p class="lede">Unlock the next destination by solving the mathematical riddle.</p><div class="riddle">${riddle[0]}</div><form id="answerForm" class="stack"><label for="answer">Your answer</label><input id="answer" inputmode="numeric" autocomplete="off" placeholder="Enter a positive integer" required><button class="primary">Submit answer <span>→</span></button><p id="feedback" class="feedback">The answer is never revealed. Take your best shot.</p></form>`; document.querySelector('#answerForm').onsubmit = async (event) => { event.preventDefault(); const feedback = document.querySelector('#feedback'); if (Number(document.querySelector('#answer').value) !== riddle[1]) { feedback.textContent = '✕ Incorrect. That is not the answer. Try again.'; feedback.className = 'feedback error-text'; return; } state.unlocked = true; state.currentLocation = team.route[state.currentStage]; await persist(); render(); }; }
-function clueCard() { const location = locationById(state.currentLocation); els.card.innerHTML = `<div class="kicker success-text">✓ MATH SOLVED</div><h1>Your next location.</h1><div class="clue">${location.clue}</div><div class="destination"><span>Current destination</span><strong>${location.shortName}</strong></div><form id="codeForm" class="stack"><label for="locationCode">Location code</label><input id="locationCode" autocomplete="off" placeholder="Enter the code at the checkpoint" required><button class="primary">Verify location <span>→</span></button><p id="feedback" class="feedback">Scan the checkpoint QR or use the backup code printed there.</p></form>`; document.querySelector('#codeForm').onsubmit = async (event) => { event.preventDefault(); const input = document.querySelector('#locationCode').value.trim().toUpperCase(); const feedback = document.querySelector('#feedback'); if (input !== location.code) { feedback.textContent = '✕ This is not your current checkpoint. Check your clue and try again.'; feedback.className = 'feedback error-text'; return; } state.completedCheckpoints ||= []; if (state.completedCheckpoints.includes(state.currentLocation)) { feedback.textContent = 'This checkpoint has already been completed.'; return; } state.completedCheckpoints.push(state.currentLocation); state.lastCheckpointTime = Date.now(); state.currentStage += 1; state.unlocked = false; state.currentLocation = null; await persist(); render(); }; }
-function finalCard() { els.card.innerHTML = `<div class="kicker">🏁 FINAL DESTINATION</div><h1>Return to CORE.</h1><p class="lede">Your journey began here. Find the final CORE code to stop your timer and record your finish.</p><div class="destination"><span>Final checkpoint</span><strong>CORE FINAL</strong></div><form id="finalForm" class="stack"><label for="finalCode">Final CORE code</label><input id="finalCode" autocomplete="off" placeholder="Enter the final code" required><button class="primary">Finish hunt <span>→</span></button><p id="feedback" class="feedback">The code is printed at the final QR checkpoint.</p></form>`; document.querySelector('#finalForm').onsubmit = async (event) => { event.preventDefault(); const feedback = document.querySelector('#feedback'); if (document.querySelector('#finalCode').value.trim().toUpperCase() !== GAME_CONFIG.finalCode) { feedback.textContent = '✕ Incorrect final code. Try again.'; feedback.className = 'feedback error-text'; return; } state.status = STATUS.COMPLETED; state.completionTime = Date.now(); state.currentLocation = 'final_core'; await persist(); render(); }; }
-function completeCard() { els.card.innerHTML = `<div class="completion-mark">✦</div><div class="kicker success-text">TREASURE FOUND</div><h1>${team.name} completed the hunt.</h1><p class="lede">You did it. Your valid completion time is locked on this device.</p><div class="finish-time">${formatDuration(state.completionTime - state.startTime)}</div><div class="treasure-chest" aria-hidden="true">▣</div><p class="success-text">🏆 Congratulations!</p>`; }
-function render() { setHeader(); renderTimer(); if (state.status === STATUS.COMPLETED) return completeCard(); if (state.status === STATUS.NOT_STARTED) return startCard(); if (state.currentStage >= 5) return finalCard(); return state.unlocked ? clueCard() : challengeCard(); }
-async function init() { try { state = await getTeamState(team.id); render(); timerId = setInterval(renderTimer, 1000); } catch { notify('Connection lost. Your local timer is still safe.', 'error-text'); } }
-document.querySelector('#logout').onclick = () => { clearSession(); window.location.href = 'index.html'; };
+
+
+// --------------------------------------------------
+// NOTIFICATIONS
+// --------------------------------------------------
+
+const notify = (message, kind = '') => {
+    els.toast.textContent = message;
+    els.toast.className = `toast ${kind}`;
+
+    setTimeout(() => {
+        els.toast.className = 'toast';
+    }, 3200);
+};
+
+
+// --------------------------------------------------
+// TIMER
+// --------------------------------------------------
+
+const renderTimer = () => {
+    const end = state.completionTime || Date.now();
+
+    els.timer.textContent = formatDuration(
+        state.startTime
+            ? end - state.startTime
+            : 0
+    );
+};
+
+
+// --------------------------------------------------
+// HEADER / PROGRESS
+// --------------------------------------------------
+
+const setHeader = () => {
+    els.name.textContent = `${team.emoji} ${team.name}`;
+
+    els.status.textContent = connectionLabel();
+
+    els.progress.textContent =
+        `Checkpoint ${Math.min(state.currentStage, 5)} / 5`;
+
+    const progressFill = document.querySelector('#progressFill');
+
+    if (progressFill) {
+        progressFill.style.width =
+            `${state.currentStage / 5 * 100}%`;
+    }
+};
+
+
+// --------------------------------------------------
+// SAVE STATE
+// --------------------------------------------------
+
+async function persist() {
+    state = await saveTeamState(team.id, state);
+
+    setHeader();
+}
+
+
+// --------------------------------------------------
+// START SCREEN
+// --------------------------------------------------
+
+function startCard() {
+
+    els.card.innerHTML = `
+        <div class="kicker">
+            START AT CORE
+        </div>
+
+        <h1>
+            Your hunt begins here.
+        </h1>
+
+        <p class="lede">
+            Five checkpoints. One route known only one step at a time.
+            Keep your team together and follow the clue exactly.
+        </p>
+
+        <button class="primary" id="startHunt">
+            Start treasure hunt
+            <span>→</span>
+        </button>
+    `;
+
+    document.querySelector('#startHunt').onclick =
+        async () => {
+
+            state.status = STATUS.IN_PROGRESS;
+
+            state.startTime = Date.now();
+
+            state.currentStage = 0;
+
+            state.currentLocation = null;
+
+            await persist();
+
+            render();
+        };
+}
+
+
+// --------------------------------------------------
+// MATH CHALLENGE
+// --------------------------------------------------
+
+function challengeCard() {
+
+    const riddle =
+        GAME_CONFIG.riddles[team.id][state.currentStage];
+
+
+    els.card.innerHTML = `
+        <div class="kicker">
+            CURRENT CHALLENGE · ${state.currentStage + 1} OF 5
+        </div>
+
+        <h1>
+            Solve the number.
+        </h1>
+
+        <p class="lede">
+            Unlock the next destination by solving
+            the mathematical riddle.
+        </p>
+
+        <div class="riddle">
+            ${riddle[0]}
+        </div>
+
+        <form id="answerForm" class="stack">
+
+            <label for="answer">
+                Your answer
+            </label>
+
+            <input
+                id="answer"
+                type="number"
+                inputmode="numeric"
+                autocomplete="off"
+                placeholder="Enter a positive integer"
+                min="0"
+                step="1"
+                required
+            >
+
+            <button class="primary">
+                Submit answer
+                <span>→</span>
+            </button>
+
+            <p id="feedback" class="feedback">
+                The answer is never revealed.
+                Take your best shot.
+            </p>
+
+        </form>
+    `;
+
+
+    document.querySelector('#answerForm').onsubmit =
+        async (event) => {
+
+            event.preventDefault();
+
+            const answerInput =
+                document.querySelector('#answer');
+
+            const feedback =
+                document.querySelector('#feedback');
+
+            const userAnswer =
+                Number(answerInput.value);
+
+
+            // Prevent empty / invalid answers
+            if (
+                answerInput.value.trim() === '' ||
+                !Number.isFinite(userAnswer)
+            ) {
+
+                feedback.textContent =
+                    '✕ Please enter a valid number.';
+
+                feedback.className =
+                    'feedback error-text';
+
+                return;
+            }
+
+
+            // Check mathematical answer
+            if (userAnswer !== riddle[1]) {
+
+                feedback.textContent =
+                    '✕ Incorrect. That is not the answer. Try again.';
+
+                feedback.className =
+                    'feedback error-text';
+
+                answerInput.focus();
+
+                return;
+            }
+
+
+            // Correct answer
+            state.unlocked = true;
+
+            state.currentLocation =
+                team.route[state.currentStage];
+
+
+            await persist();
+
+            render();
+        };
+}
+
+
+// --------------------------------------------------
+// LOCATION CLUE
+// --------------------------------------------------
+
+function clueCard() {
+
+    const location =
+        locationById(state.currentLocation);
+
+
+    els.card.innerHTML = `
+        <div class="kicker success-text">
+            ✓ MATH SOLVED
+        </div>
+
+        <h1>
+            Your next clue.
+        </h1>
+
+        <div class="clue">
+            ${location.clue}
+        </div>
+
+        <form id="codeForm" class="stack">
+
+            <label for="locationCode">
+                Location code
+            </label>
+
+            <input
+                id="locationCode"
+                type="text"
+                autocomplete="off"
+                placeholder="Enter the code at the checkpoint"
+                required
+            >
+
+            <button class="primary">
+                Verify location
+                <span>→</span>
+            </button>
+
+            <p id="feedback" class="feedback">
+                Scan the checkpoint QR or use the
+                backup code printed there.
+            </p>
+
+        </form>
+    `;
+
+
+    document.querySelector('#codeForm').onsubmit =
+        async (event) => {
+
+            event.preventDefault();
+
+
+            const input =
+                document
+                    .querySelector('#locationCode')
+                    .value
+                    .trim()
+                    .toUpperCase();
+
+
+            const feedback =
+                document.querySelector('#feedback');
+
+
+            // Incorrect checkpoint code
+            if (input !== location.code) {
+
+                feedback.textContent =
+                    '✕ This is not your current checkpoint. ' +
+                    'Check your clue and try again.';
+
+                feedback.className =
+                    'feedback error-text';
+
+                return;
+            }
+
+
+            // Make sure completedCheckpoints exists
+            state.completedCheckpoints ||= [];
+
+
+            // Prevent duplicate checkpoint completion
+            if (
+                state.completedCheckpoints
+                    .includes(state.currentLocation)
+            ) {
+
+                feedback.textContent =
+                    'This checkpoint has already been completed.';
+
+                return;
+            }
+
+
+            // Mark checkpoint as completed
+            state.completedCheckpoints.push(
+                state.currentLocation
+            );
+
+
+            state.lastCheckpointTime =
+                Date.now();
+
+
+            // Move to next stage
+            state.currentStage += 1;
+
+
+            // Lock the next math challenge
+            state.unlocked = false;
+
+
+            // Hide current location
+            state.currentLocation = null;
+
+
+            await persist();
+
+            render();
+        };
+}
+
+
+// --------------------------------------------------
+// FINAL CORE SCREEN
+// --------------------------------------------------
+
+function finalCard() {
+
+    els.card.innerHTML = `
+        <div class="kicker">
+            🏁 FINAL DESTINATION
+        </div>
+
+        <h1>
+            Return to CORE.
+        </h1>
+
+        <p class="lede">
+            Your journey began here.
+            Find the final CORE code to stop your timer
+            and record your finish.
+        </p>
+
+        <div class="destination">
+            <span>
+                Final checkpoint
+            </span>
+
+            <strong>
+                CORE FINAL
+            </strong>
+        </div>
+
+        <form id="finalForm" class="stack">
+
+            <label for="finalCode">
+                Final CORE code
+            </label>
+
+            <input
+                id="finalCode"
+                type="text"
+                autocomplete="off"
+                placeholder="Enter the final code"
+                required
+            >
+
+            <button class="primary">
+                Finish hunt
+                <span>→</span>
+            </button>
+
+            <p id="feedback" class="feedback">
+                The code is printed at the final QR checkpoint.
+            </p>
+
+        </form>
+    `;
+
+
+    document.querySelector('#finalForm').onsubmit =
+        async (event) => {
+
+            event.preventDefault();
+
+
+            const feedback =
+                document.querySelector('#feedback');
+
+
+            const enteredCode =
+                document
+                    .querySelector('#finalCode')
+                    .value
+                    .trim()
+                    .toUpperCase();
+
+
+            // Incorrect final code
+            if (
+                enteredCode !==
+                GAME_CONFIG.finalCode
+            ) {
+
+                feedback.textContent =
+                    '✕ Incorrect final code. Try again.';
+
+                feedback.className =
+                    'feedback error-text';
+
+                return;
+            }
+
+
+            // Successful completion
+            state.status =
+                STATUS.COMPLETED;
+
+
+            state.completionTime =
+                Date.now();
+
+
+            state.currentLocation =
+                'final_core';
+
+
+            await persist();
+
+            render();
+        };
+}
+
+
+// --------------------------------------------------
+// COMPLETION SCREEN
+// --------------------------------------------------
+
+function completeCard() {
+
+    const completionTime =
+        state.completionTime - state.startTime;
+
+
+    els.card.innerHTML = `
+        <div class="completion-mark">
+            ✦
+        </div>
+
+        <div class="kicker success-text">
+            TREASURE FOUND
+        </div>
+
+        <h1>
+            ${team.name} completed the hunt.
+        </h1>
+
+        <p class="lede">
+            You did it.
+            Your valid completion time is locked
+            on this device.
+        </p>
+
+        <div class="finish-time">
+            ${formatDuration(completionTime)}
+        </div>
+
+        <div
+            class="treasure-chest"
+            aria-hidden="true"
+        >
+            ▣
+        </div>
+
+        <p class="success-text">
+            🏆 Congratulations!
+        </p>
+    `;
+}
+
+
+// --------------------------------------------------
+// MAIN RENDER FUNCTION
+// --------------------------------------------------
+
+function render() {
+
+    setHeader();
+
+    renderTimer();
+
+
+    // Hunt completed
+    if (
+        state.status === STATUS.COMPLETED
+    ) {
+        return completeCard();
+    }
+
+
+    // Hunt not started
+    if (
+        state.status === STATUS.NOT_STARTED
+    ) {
+        return startCard();
+    }
+
+
+    // All five checkpoints completed
+    if (
+        state.currentStage >= 5
+    ) {
+        return finalCard();
+    }
+
+
+    // Math solved → show clue
+    if (
+        state.unlocked
+    ) {
+        return clueCard();
+    }
+
+
+    // Otherwise show math challenge
+    return challengeCard();
+}
+
+
+// --------------------------------------------------
+// INITIALIZE GAME
+// --------------------------------------------------
+
+async function init() {
+
+    try {
+
+        state =
+            await getTeamState(team.id);
+
+        render();
+
+
+        timerId =
+            setInterval(
+                renderTimer,
+                1000
+            );
+
+    } catch (error) {
+
+        notify(
+            'Connection lost. Your local timer is still safe.',
+            'error-text'
+        );
+
+    }
+}
+
+
+// --------------------------------------------------
+// EXIT / LOGOUT
+// --------------------------------------------------
+
+const logoutButton =
+    document.querySelector('#logout');
+
+
+if (logoutButton) {
+
+    logoutButton.onclick = () => {
+
+        clearSession();
+
+        window.location.href =
+            'index.html';
+    };
+}
+
+
+// --------------------------------------------------
+// START
+// --------------------------------------------------
+
 init();
